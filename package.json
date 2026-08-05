@@ -1,0 +1,50 @@
+{
+  "name": "pi-codex-usage",
+  "version": "0.1.0",
+  "description": "Show OpenAI Codex usage windows in pi",
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "codex",
+    "openai-codex",
+    "usage"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/phy-zhangzl/pi-codex-usage.git"
+  },
+  "homepage": "https://github.com/phy-zhangzl/pi-codex-usage#readme",
+  "bugs": {
+    "url": "https://github.com/phy-zhangzl/pi-codex-usage/issues"
+  },
+  "type": "module",
+  "private": false,
+  "files": [
+    "extensions/codex-usage.ts",
+    "src/usage.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/codex-usage.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "pack:dry-run": "npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  }
+}
