@@ -5,7 +5,7 @@ export type CodexWindow = {
   resetAtSeconds?: number;
 };
 
-export type UsageSource = "headers" | "probe" | "usage";
+export type UsageSource = "usage";
 
 export type CodexUsageState = {
   observedAt: number;
@@ -15,6 +15,8 @@ export type CodexUsageState = {
   creditsBalance?: string;
   creditsHasCredits?: boolean;
   creditsUnlimited?: boolean;
+  ordinaryUsageAllowed?: boolean;
+  limitReached?: boolean;
   primary: CodexWindow;
   secondary: CodexWindow;
 };
@@ -30,57 +32,56 @@ export type UsageWindow = {
 export const FIVE_HOUR_WINDOW_MINUTES = 5 * 60;
 export const SEVEN_DAY_WINDOW_MINUTES = 7 * 24 * 60;
 
-export function parseNumber(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  const parsed = Number(value.trim());
-  return Number.isFinite(parsed) ? parsed : undefined;
+function object(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
 }
 
-export function parseBoolean(value: string | undefined): boolean | undefined {
-  if (!value) return undefined;
-  const normalized = value.trim().toLowerCase();
-  if (["1", "true", "yes", "y"].includes(normalized)) return true;
-  if (["0", "false", "no", "n"].includes(normalized)) return false;
-  return undefined;
+function number(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
-export function normalizeHeaders(headers: Record<string, string>): Record<string, string> {
-  const normalized: Record<string, string> = {};
-  for (const [key, value] of Object.entries(headers)) {
-    normalized[key.toLowerCase()] = value;
-  }
-  return normalized;
+function boolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
-export function extractStateFromHeaders(
-  headersInput: Record<string, string>,
-  source: Exclude<UsageSource, "usage">,
-): CodexUsageState | undefined {
-  const headers = normalizeHeaders(headersInput);
-  const foundCodexHeaders = Object.keys(headers).some((key) => key.startsWith("x-codex-"));
-  if (!foundCodexHeaders) return undefined;
-
+function usageWindow(value: unknown): CodexWindow {
+  const window = object(value);
+  const seconds = number(window.limit_window_seconds);
   return {
-    observedAt: Date.now(),
-    source,
-    activeLimit: headers["x-codex-active-limit"],
-    planType: headers["x-codex-plan-type"],
-    creditsBalance: headers["x-codex-credits-balance"],
-    creditsHasCredits: parseBoolean(headers["x-codex-credits-has-credits"]),
-    creditsUnlimited: parseBoolean(headers["x-codex-credits-unlimited"]),
-    primary: {
-      usedPercent: parseNumber(headers["x-codex-primary-used-percent"]),
-      windowMinutes: parseNumber(headers["x-codex-primary-window-minutes"]),
-      resetAfterSeconds: parseNumber(headers["x-codex-primary-reset-after-seconds"]),
-      resetAtSeconds: parseNumber(headers["x-codex-primary-reset-at"]),
-    },
-    secondary: {
-      usedPercent: parseNumber(headers["x-codex-secondary-used-percent"]),
-      windowMinutes: parseNumber(headers["x-codex-secondary-window-minutes"]),
-      resetAfterSeconds: parseNumber(headers["x-codex-secondary-reset-after-seconds"]),
-      resetAtSeconds: parseNumber(headers["x-codex-secondary-reset-at"]),
-    },
+    usedPercent: number(window.used_percent),
+    windowMinutes: seconds === undefined ? undefined : seconds / 60,
+    resetAfterSeconds: number(window.reset_after_seconds),
+    resetAtSeconds: number(window.reset_at),
   };
+}
+
+/** Keep only quota fields, never the endpoint's email/user/account identifiers. */
+export function extractStateFromUsage(payload: unknown): CodexUsageState {
+  const data = object(payload);
+  const limit = object(data.rate_limit);
+  const credits = object(data.credits);
+  const balance = credits.balance;
+  const state: CodexUsageState = {
+    observedAt: Date.now(),
+    source: "usage",
+    activeLimit: "codex",
+    planType: typeof data.plan_type === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(data.plan_type)
+      ? data.plan_type : undefined,
+    creditsBalance: (typeof balance === "string" && balance.trim() && balance.length <= 64 && Number.isFinite(Number(balance)))
+      || (typeof balance === "number" && Number.isFinite(balance)) ? String(balance) : undefined,
+    creditsHasCredits: boolean(credits.has_credits),
+    creditsUnlimited: boolean(credits.unlimited),
+    ordinaryUsageAllowed: boolean(limit.allowed),
+    limitReached: boolean(limit.limit_reached),
+    primary: usageWindow(limit.primary_window),
+    secondary: usageWindow(limit.secondary_window),
+  };
+  if (getUsageWindows(state).length === 0 && state.creditsHasCredits === undefined
+    && state.creditsUnlimited === undefined && state.ordinaryUsageAllowed === undefined) {
+    throw new Error("Codex quota response contains no recognized usage fields.");
+  }
+  return state;
 }
 
 /**
@@ -126,10 +127,12 @@ export function remainingPercent(window: CodexWindow): number | undefined {
 
 export function formatStatusText(state: CodexUsageState): string | undefined {
   const windows = getUsageWindows(state);
-  if (windows.length === 0) return undefined;
-  return `Codex ${windows
-    .map(({ label, window }) => `${label} ${formatPercent(remainingPercent(window))}`)
-    .join(" · ")}`;
+  const blocked = state.ordinaryUsageAllowed === false || state.limitReached === true;
+  const text = windows.length > 0
+    ? windows.map(({ label, window }) => `${label} ${formatPercent(remainingPercent(window))}`).join(" · ")
+    : state.creditsHasCredits !== undefined || state.creditsUnlimited !== undefined
+      ? `credits ${creditsText(state)}` : "windows unavailable";
+  return `Codex quota ${text}${blocked ? " · blocked" : ""}`;
 }
 
 export function formatPercent(value: number | undefined): string {

@@ -1,105 +1,110 @@
 # pi-codex-usage
 
-A pi extension that displays OpenAI Codex usage windows in the footer and on demand.
+Display **Codex account quota** in pi's footer, including when pi uses the new
+`openai` / Sign in with ChatGPT provider.
 
-> **Status:** This package uses an internal ChatGPT/Codex endpoint and internal
-> `x-codex-*` response headers. It is not an official OpenAI usage API client.
-> The endpoint, headers, or authentication behavior may change without notice.
+> This is Codex quota, **not the remaining allowance of pi's new OpenAI OAuth app**.
+> The Codex and pi logins can be different accounts. Even for the same account,
+> do not assume their quota buckets and per-app limits are identical.
+>
+> This package calls an internal ChatGPT/Codex endpoint, not a public OpenAI usage
+> API. Its response format and authentication may change without notice.
 
-## What it does
+## How it works
 
-- Reads the local `openai-codex` OAuth credential from `~/.pi/agent/auth.json`.
-- Uses Codex response headers when pi exposes them.
-- Falls back to a small quota-probe request when a refresh is needed.
-- Identifies windows from their server-reported `windowMinutes` value:
-  - `300` minutes → `5h`
-  - `10080` minutes → `7d`
-  - other positive values are shown as minutes instead of guessed.
-- Ignores empty windows such as `windowMinutes=0`.
-- Persists the latest state as a pi custom session entry without adding it to the LLM context.
+- Read the existing Codex CLI credential from `$CODEX_HOME/auth.json`, or
+  `~/.codex/auth.json` when `CODEX_HOME` is unset.
+- Make a read-only `GET https://chatgpt.com/backend-api/wham/usage` with the Codex
+  access token and, when present, `ChatGPT-Account-Id`.
+- Do **not** generate a model response, launch app-server, read pi's auth file,
+  follow redirects, refresh tokens, or modify either login.
+- Show the status when pi's provider is `openai` or `openai-codex`:
 
-The extension does **not** send credentials to this GitHub project. The access token is
-read locally and sent only to the configured ChatGPT/Codex endpoint used by the probe.
+  ```text
+  Codex quota 5h 85% · 7d 67%
+  ```
+
+  Percentages are **remaining**, not used. Windows come from the server's
+  `limit_window_seconds`: 18000 seconds means `5h`, 604800 means `7d`;
+  other positive durations display as minutes. Missing/zero-duration windows are
+  omitted; a missing percentage is `?`, never assumed to mean 100% remaining.
+- Respect the backend's `allowed`/`limit_reached` state with a `blocked` suffix.
+  Percentages and reset times alone do not establish permission to make requests.
+- Refresh on interactive session startup, OpenAI model selection, and every five
+  minutes. Successful results are cached for five minutes; concurrent requests
+  are coalesced. `/codex-usage-refresh` bypasses the cache.
+- Reread the credential on refresh and discard cached quota on account/token
+  changes. Failed refreshes show `unavailable`, not a stale percentage.
+- Bound each query to 15 seconds; cancel outstanding queries on session shutdown
+  or extension reload. Headless startup does not poll; `PI_OFFLINE=1` disables queries.
+
+Only sanitized quota metadata is saved as custom session entries, outside the LLM
+context. Old session snapshots are not restored because their account ownership
+cannot be established. Email, user/account IDs, credentials, and backend error
+bodies are not saved or logged.
 
 ## Requirements
 
-- pi 0.83 or newer
-- A logged-in `openai-codex` provider in pi
-- Node.js supported by the installed pi version (the package metadata currently uses `>=22.19.0`)
+- pi (tested with `@earendil-works/pi-coding-agent` 1.1.0).
+- Node.js >=22.19.0.
+- An existing **Codex CLI ChatGPT login** stored in `auth.json`. API-key logins,
+  keychain-only credential storage, and pi's new direct OAuth token are not accepted.
 
-## Install from a GitHub checkout
+If necessary, sign in separately using `codex login`. This does not require adding
+`openai-codex` back to pi's defaults, model configuration, or `auth.json`.
 
-After this repository is pushed to GitHub:
+The plugin does not renew credentials. On HTTP 401/403, refresh/sign in through
+Codex CLI and run `/codex-usage-refresh` again. Do not substitute pi's new `openai`
+token: [OpenAI currently does not support a remaining-quota API for that grant](https://github.com/openai/sign-in-with-chatgpt-devkit/issues/3).
 
-```bash
-pi install git:github.com/phy-zhangzl/pi-codex-usage
-```
+## Install
 
-Pin a tag or commit for reproducible installs:
-
-```bash
-pi install git:github.com/phy-zhangzl/pi-codex-usage@v0.1.0
-```
-
-For local development:
+From a local checkout:
 
 ```bash
 pi install /absolute/path/to/pi-codex-usage
 ```
 
-Then run `/reload` in pi if it was already running.
+For the published GitHub source, after these changes have been pushed:
+
+```bash
+pi install git:github.com/phy-zhangzl/pi-codex-usage
+```
+
+Run `/reload` in an existing pi session, or restart pi.
 
 ## Commands
 
-- `/codex-usage` — show plan, credits, detected usage windows, reset times, and source.
-- `/codex-usage-refresh` — force a fresh quota probe.
+- `/codex-usage` — show Codex plan, credits, remaining quota, reset times,
+  credential source, and observation time. Also reports the reason for failure.
+- `/codex-usage-refresh` — force one fresh read-only query.
 
-The footer status is shown only when the active provider is `openai-codex`.
+Explicit commands can be used with any active model. The persistent footer is
+shown only for OpenAI providers.
 
-## Configuration
+## Configuration and privacy
 
-The probe uses the active Codex model when available. Override it with:
+Use `CODEX_HOME` to select the existing Codex credential directory. No model
+configuration or `PI_CODEX_USAGE_MODEL` is needed anymore.
 
-```bash
-PI_CODEX_USAGE_MODEL=gpt-5.5 pi
-```
+Within pi, requests use pi's global fetch and inherit its HTTP proxy configuration.
+Standalone Node diagnostics should use the same configured transport; on Node
+versions that support it, `--use-env-proxy` enables environment proxies.
 
-Enable local diagnostic logging with:
+Optional local diagnostics:
 
 ```bash
 PI_CODEX_USAGE_DEBUG=1 pi
 ```
 
-The debug log is written to `~/.pi/agent/codex-usage-debug.log` and contains usage
-metadata and errors, not the OAuth token. Treat it as local diagnostic data anyway.
+The log is `~/.pi/agent/codex-usage-debug.log`; it contains quota window labels,
+plan names, and sanitized errors. Treat it as private diagnostic data.
 
-## Important quota and privacy warning
-
-The fallback probe is a real `POST` request to:
-
-```text
-https://chatgpt.com/backend-api/codex/responses
-```
-
-It asks for a minimal streamed `OK` response and cancels the stream after receiving
-headers. Cancelling the stream does not prove that the request is free or excluded from
-quota accounting. Refreshes can happen at session start, on model selection, every five
-minutes, or when a user runs `/codex-usage-refresh`.
-
-The endpoint and headers are internal implementation details. Review the applicable
-OpenAI/ChatGPT terms and your account policy before using or distributing this package.
-
-Do not commit any of the following:
-
-```text
-~/.pi/agent/auth.json
-~/.pi/agent/auth.json.backup*
-~/.pi/agent/sessions/
-~/.pi/agent/codex-usage-debug.log
-```
-
-Pi extensions run with full local process and filesystem permissions. Review the source
-before installing a package from an untrusted repository.
+Credentials are read locally and sent only to the fixed HTTPS endpoint (and
+through your configured proxy). Review OpenAI/ChatGPT terms and account policies
+before using or distributing this integration. Never commit Codex/pi credentials,
+session history, or debug logs. Pi extensions run with full local permissions;
+review their source before installing.
 
 ## Development
 
@@ -108,8 +113,9 @@ npm test
 npm run pack:dry-run
 ```
 
-Tests do not make network requests. They cover window identification, header parsing,
-empty-window handling, reset-time calculation, and extension registration.
+Tests use fake credentials/responses and make no network requests. They cover GET
+request safety, auth selection, quota parsing, missing windows, reset times,
+OpenAI footer/commands, cache invalidation, error handling, and shutdown cancellation.
 
 ## License
 

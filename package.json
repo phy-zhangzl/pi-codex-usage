@@ -1,7 +1,7 @@
 {
   "name": "pi-codex-usage",
   "version": "0.1.0",
-  "description": "Show OpenAI Codex usage windows in pi",
+  "description": "Show Codex account quota in pi using read-only usage queries",
   "keywords": [
     "pi",
     "pi-package",
@@ -24,6 +24,7 @@
   "files": [
     "extensions/codex-usage.ts",
     "src/usage.ts",
+    "src/client.ts",
     "README.md",
     "LICENSE"
   ],
